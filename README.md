@@ -1,5 +1,10 @@
 [中文版](README.zh.md)
 
+The main license of this repository was changed to Apache 2.0 on July 6, 2026.
+
+> After consideration, using GPL for these little-known repositories I created is clearly overkill. For developers who might stumble upon them and attempt to use them in closed-source projects, proper freedom should be granted.
+---
+
 # avb_mini_signer (formerly avb_autosign) — Statically Linked AVB 2.0 RSA4096 add_hash_footer Implementation
 
 Runs well in constrained environments with zero dependency on system libraries or runtime.
@@ -68,8 +73,8 @@ make
 3. (When using the Android NDK) Package the object file into a static library archive, since the ndk-build script does not accept raw object files as direct input.
 
 ```bash
-ld.lld -r -b binary -m <architecture> subaru_key.pem -o subaru_key_aarch64.o
-ar rcs subaru_key_aarch64.a subaru_key_aarch64.o
+ld.lld -r -b binary -m <architecture> subaru_key.pem -o private_key.o
+ar rcs private_key.a private_key.o
 ```
 
 > Ensure the `extern` symbol declarations in `main.c` match the object file generated from your `.pem` — the symbol name is derived from the input `.pem` filename.

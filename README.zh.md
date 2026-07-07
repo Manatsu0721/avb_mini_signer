@@ -1,5 +1,9 @@
 [English](README.md)
 
+本仓库主许可证已于2026年7月6日变更为Apache 2.0。
+> 经过我的考量，对我创建的这些无人问津的存储库使用GPL显然有些过分，考虑到一些偶然发现它并希望闭源使用的开发者，应该给予恰当的自由度。
+---
+
 # avb_mini_signer（旧名称avb_autosign） — 静态链接的 AVB 2.0 RSA4096 add_hash_footer 实现。
 可以很好地在一些受限的环境中运行，能够做到不依赖系统库和程序。
 
@@ -61,8 +65,8 @@ make
 2. 使用与目标架构匹配的ld或objcopy转为目标文件。命令示例见下。
 3. （如果使用安卓NDK构建）还需要把这个目标文件打包为小静态库，因为ndk-build脚本不支持目标文件直接输入。
 ```bash
-ld.lld -r -b binary -m <架构> subaru_key.pem -o subaru_key_aarch64.o
-ar rcs subaru_key_aarch64.a subaru_key_aarch64.o
+ld.lld -r -b binary -m <架构> subaru_key.pem -o private_key.o
+ar rcs private_key.a private_key.o
 ```
 > 请注意main.c开头extern声明的函数与刚刚的目标文件是否一致。你输入的.pem的文件名会直接决定目标文件的符号。
 
