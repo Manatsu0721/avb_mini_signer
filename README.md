@@ -1,13 +1,14 @@
-[中文版](README.zh.md)
+[English](README.md)
 
 The main license of this repository was changed to Apache 2.0 on July 6, 2026.
 
 > After consideration, using GPL for these little-known repositories I created is clearly overkill. For developers who might stumble upon them and attempt to use them in closed-source projects, proper freedom should be granted.
+
 ---
 
 # avb_mini_signer (formerly avb_autosign) — Statically Linked AVB 2.0 RSA4096 add_hash_footer Implementation
 
-Runs well in constrained environments with zero dependency on system libraries or runtime.
+This branch uses mbedTLS as the crypto backend, which can be built small and statically linked. Runs well in constrained environments with zero dependency on system libraries or runtime.
 
 ## Usage
 
@@ -16,7 +17,6 @@ Runs well in constrained environments with zero dependency on system libraries o
 ```
 
 Functionally equivalent to:
-
 ```bash
 avbtool.py add_hash_footer \
   --partition_name <name> \
@@ -45,25 +45,37 @@ cd avb_mini_signer
 ndk-build
 ```
 
-## Building libcrypto from Source
+## Building mbedTLS (libmbedcrypto) from Source
 
-1. Download the libcrypto source (OpenSSL 1.1.1 — 1.1.1zh).
-2. Configure with minimal feature set.
-3. Run `make`. Locate the resulting `libcrypto.a`.
+1. Download the mbedTLS source (from mbedtls-3.6).
+2. Build it.
 
 > For cross-compilation to other architectures, configure the cross-compiler toolchain via environment variables beforehand.
 
 ```bash
-wget https://codeload.github.com/kzalewski/openssl-1.1.1/zip/refs/tags/1.1.1zh
-unzip 1.1.1zh
-cd openssl-1.1.1-1.1.1zh
-./Configure <architecture> \
-  no-shared no-asm no-threads no-err no-sock no-dso \
-  no-idea no-camellia no-seed no-bf no-cast no-des no-rc2 no-rc4 no-rc5 \
-  no-md2 no-md4 no-ripemd no-mdc2 no-dsa no-dh no-ec no-ecdsa no-ecdh \
-  no-tls no-cms no-ocsp no-ct no-comp no-crypto-mdebug no-ec no-ecdsa no-ecdh no-ec2m \
-  -O2 -ffunction-sections -fdata-sections
-make
+git clone --branch mbedtls-3.6 https://github.com/Mbed-TLS/mbedtls.git
+cd mbedtls
+make CFLAGS="-O2 -ffunction-sections -fdata-sections"
+```
+3. It is actually recommended to directly use the file list in `jni/mbedtls/library` of this branch for a minimal build. This project integrates those individual functional sources directly.
+```bash
+SRC="aes.c asn1parse.c asn1write.c base64.c bignum.c bignum_core.c \
+     bignum_mod.c bignum_mod_raw.c cipher.c cipher_wrap.c constant_time.c \
+     md.c oid.c pem.c pk.c pkparse.c pk_wrap.c platform.c platform_util.c \
+     rsa.c rsa_alt_helpers.c sha256.c"
+     
+cd "jni/mbedtls/library/"
+for f in $SRC; do
+  echo "  $f"
+  <your_compiler> -c -std=c99 -O2 -fPIC -fvisibility=hidden -fdata-sections -ffunction-sections \
+    -I"../../../jni/mbedtls/include" \
+    -DMBEDTLS_CONFIG_FILE='"avb_config.h"' \
+    "./$f"     2>&1 || exit 1
+done
+
+ar rcs ../../../libmbedcrypto.a *.o
+rm -f ../../../*.o
+cd ../../..
 ```
 
 ## Embedding a Custom Private Key
@@ -71,12 +83,10 @@ make
 1. Ensure you have a SHA256_RSA4096 private key.
 2. Use `ld` or `objcopy` (matching your target architecture) to convert the key into an object file. See command examples below.
 3. (When using the Android NDK) Package the object file into a static library archive, since the ndk-build script does not accept raw object files as direct input.
-
 ```bash
 ld.lld -r -b binary -m <architecture> subaru_key.pem -o private_key.o
 ar rcs private_key.a private_key.o
 ```
-
 > Ensure the `extern` symbol declarations in `main.c` match the object file generated from your `.pem` — the symbol name is derived from the input `.pem` filename.
 
 ---

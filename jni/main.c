@@ -1,33 +1,25 @@
 /*
- * avb_autosign — 静态链接的 AVB 2.0 add_hash_footer 实现
+ * avb_mini_signer — AVB 2.0 add_hash_footer 实现 (mbedTLS 驱动)
  *
- * 用法: avb_autosign <partition_name> <partition_size> <image_path>
+ * 用法: avb_mini_signer <partition_name> <partition_size> <image_path>
  *
- * 功能等价于:
- *   avbtool.py add_hash_footer \
- *     --partition_name <name> \
- *     --image <path> \
- *     --algorithm SHA256_RSA4096 \
- *     --key <embedded>
- *     --partition_size <size>
- * 
- * 输出直接覆写原镜像文件
+ * 私钥通过 ld -r -b binary 嵌入
+ * 依赖: mbedTLS (RSA, SHA256, PEM, BIGNUM)
  */
 
-#define OPENSSL_SUPPRESS_DEPRECATED
+#define MBEDTLS_ALLOW_PRIVATE_ACCESS
+#define MBEDTLS_CONFIG_FILE "avb_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/rsa.h>
-#include <openssl/bn.h>
-#include <openssl/err.h>
-#include <openssl/crypto.h>
 #include <unistd.h>
-#include <openssl/sha.h>
+#include <time.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/rsa.h>
+#include <mbedtls/sha256.h>
+#include <mbedtls/bignum.h>
 
 /* ========== 1. 嵌入的私钥 ========== */
 extern char _binary_subaru_key_pem_start[];
@@ -137,17 +129,64 @@ static uint64_t round_up(uint64_t v, uint64_t align) {
     return (v + align - 1) & ~(align - 1);
 }
 
-static void print_openssl_error(void) {
-    ERR_print_errors_fp(stderr);
+/* 大端序列化辅助 (AVB 磁盘格式为大端) */
+
+static inline void put_u32_be(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)(v);
 }
 
-static EVP_PKEY* load_embedded_key(void) {
-    long key_len = _binary_subaru_key_pem_end - _binary_subaru_key_pem_start;
-    BIO *bio = BIO_new_mem_buf(_binary_subaru_key_pem_start, key_len);
-    if (!bio) return NULL;
-    EVP_PKEY *pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
-    BIO_free(bio);
-    return pkey;
+static inline void put_u64_be(uint8_t *p, uint64_t v) {
+    p[0] = (uint8_t)(v >> 56);
+    p[1] = (uint8_t)(v >> 48);
+    p[2] = (uint8_t)(v >> 40);
+    p[3] = (uint8_t)(v >> 32);
+    p[4] = (uint8_t)(v >> 24);
+    p[5] = (uint8_t)(v >> 16);
+    p[6] = (uint8_t)(v >> 8);
+    p[7] = (uint8_t)(v);
+}
+
+/* 简单 RNG (用于 mbedtls blinding, 只用一次, 不需要密码学安全) */
+static int simple_rng(void *ctx, unsigned char *buf, size_t len) {
+    (void)ctx;
+    static unsigned int seed = 0;
+    if (seed == 0) seed = (unsigned int)((unsigned long)&seed ^ time(NULL) ^ getpid());
+    for (size_t i = 0; i < len; i++) {
+        seed = seed * 1103515245U + 12345U;
+        buf[i] = (unsigned char)(seed >> 16);
+    }
+    return 0;
+}
+
+static int load_embedded_key(mbedtls_pk_context *pk) {
+    long raw_len = _binary_subaru_key_pem_end - _binary_subaru_key_pem_start;
+    /* mbedtls PEM 解析要求 null-terminated 字符串 */
+    unsigned char *key_buf = malloc(raw_len + 1);
+    if (!key_buf) return -1;
+    memcpy(key_buf, _binary_subaru_key_pem_start, raw_len);
+    key_buf[raw_len] = '\0';
+
+    int ret = mbedtls_pk_parse_key(pk, key_buf, raw_len + 1,
+                                   NULL, 0, NULL, NULL);
+    free(key_buf);
+    if (ret != 0) {
+        fprintf(stderr, "Failed to parse key: -0x%04x\n", (unsigned)-ret);
+        return -1;
+    }
+    if (mbedtls_pk_get_type(pk) != MBEDTLS_PK_RSA) {
+        fprintf(stderr, "Key is not RSA\n");
+        return -1;
+    }
+    /* 确保 RSA context 内部参数完整 (设置 len, 检查 CRT 参数等) */
+    mbedtls_rsa_context *rsa = mbedtls_pk_rsa(*pk);
+    if ((ret = mbedtls_rsa_complete(rsa)) != 0) {
+        fprintf(stderr, "rsa_complete failed: -0x%04x\n", (unsigned)-ret);
+        return -1;
+    }
+    return 0;
 }
 
 static uint8_t* read_file(const char *path, size_t *out_size) {
@@ -205,34 +244,18 @@ static int extend_file(FILE *fp, uint64_t new_size) {
  *     uint8_t  rrmodn[key_num_bits/8];
  * };
  */
-static int encode_avb_pubkey(EVP_PKEY *pkey,
+static int encode_avb_pubkey(const mbedtls_rsa_context *rsa,
                              uint8_t *out, size_t *out_len)
 {
-    /* 从 EVP_PKEY 获取 RSA 参数 */
-    RSA *rsa = EVP_PKEY_get1_RSA(pkey);
-    if (!rsa) {
-        fprintf(stderr, "Not an RSA key\n");
-        return -1;
-    }
+    const mbedtls_mpi *n = &rsa->N;
 
-    const BIGNUM *n, *e;
-    RSA_get0_key(rsa, &n, &e, NULL);
-
-    /* 验证 e == 65537 */
-    if (BN_get_word(e) != 65537) {
-        fprintf(stderr, "Only exponent 65537 supported\n");
-        RSA_free(rsa);
-        return -1;
-    }
-
-    int key_bits = BN_num_bits(n);
+    int key_bits = mbedtls_mpi_bitlen(n);
     /* 向上取整到 2 的幂 */
     int key_bits_rounded = 1;
     while (key_bits_rounded < key_bits) key_bits_rounded <<= 1;
 
     if (key_bits_rounded != 4096) {
         fprintf(stderr, "Key bits=%d, expected 4096\n", key_bits_rounded);
-        RSA_free(rsa);
         return -1;
     }
 
@@ -240,79 +263,43 @@ static int encode_avb_pubkey(EVP_PKEY *pkey,
 
     /* 计算 n0inv = -1/n[0] mod 2^32 (Montgomery inverse of low word)
      * 直接从 bn2bin 提取 modulus 的低 32 位 (大端表示的最后 4 字节) */
-    uint8_t n_bin[512];
-    int n_bytes = BN_bn2bin(n, n_bin);
-    uint32_t n0 = ((uint32_t)n_bin[n_bytes-4] << 24) |
-                  ((uint32_t)n_bin[n_bytes-3] << 16) |
-                  ((uint32_t)n_bin[n_bytes-2] << 8)  |
-                  ((uint32_t)n_bin[n_bytes-1]);
+    uint8_t mod_buf[512];
+    memset(mod_buf, 0, sizeof(mod_buf));
+    mbedtls_mpi_write_binary(n, mod_buf, key_bytes);
+
+    uint32_t n0 = ((uint32_t)mod_buf[key_bytes-4] << 24) |
+                  ((uint32_t)mod_buf[key_bytes-3] << 16) |
+                  ((uint32_t)mod_buf[key_bytes-2] << 8)  |
+                  ((uint32_t)mod_buf[key_bytes-1]);
     /* Newton iteration for modular inverse: inv = inv * (2 - n0 * inv) (mod 2^32)
      * n0 is always odd for RSA, so inverse exists */
     uint32_t inv = 1U;
-    inv = inv * (2 - n0 * inv);
-    inv = inv * (2 - n0 * inv);
-    inv = inv * (2 - n0 * inv);
-    inv = inv * (2 - n0 * inv);
-    inv = inv * (2 - n0 * inv); /* 5 iterations suffice for 32 bits */
-    uint32_t n0inv = 0U - inv; /* n0inv = -n0^(-1) mod 2^32 */
+    for (int i = 0; i < 5; i++) inv = inv * (2 - n0 * inv);
+    uint32_t n0inv = 0U - inv;
 
     /* 计算 rr = r^2 mod N, 其中 r = 2^key_bits */
-    BN_CTX *bn_ctx = BN_CTX_new();
-    BIGNUM *rr = BN_new();
-    BIGNUM *r = BN_new();
-    BN_set_bit(r, key_bits_rounded);
-    BN_mod_sqr(rr, r, n, bn_ctx);
+    mbedtls_mpi r_mpi, rr_mpi;
+    mbedtls_mpi_init(&r_mpi);
+    mbedtls_mpi_init(&rr_mpi);
 
-    /* 提取 modulus 和 rr 为大端字节数组 */
-    uint8_t *modulus_buf = malloc(key_bytes);
-    uint8_t *rr_buf = malloc(key_bytes);
-    if (!modulus_buf || !rr_buf) {
-        free(modulus_buf); free(rr_buf);
-        BN_free(rr); BN_free(r); BN_CTX_free(bn_ctx);
-        RSA_free(rsa);
-        return -1;
-    }
-    memset(modulus_buf, 0, key_bytes);
-    memset(rr_buf, 0, key_bytes);
-    BN_bn2bin(n, modulus_buf + key_bytes - BN_num_bytes(n));
-    BN_bn2bin(rr, rr_buf + key_bytes - BN_num_bytes(rr));
+    mbedtls_mpi_set_bit(&r_mpi, key_bits_rounded, 1);
+    mbedtls_mpi_exp_mod(&rr_mpi, &r_mpi, &r_mpi, n, NULL);
+
+    uint8_t rr_buf[512];
+    memset(rr_buf, 0, sizeof(rr_buf));
+    mbedtls_mpi_write_binary(&rr_mpi, rr_buf, key_bytes);
+
+    mbedtls_mpi_free(&r_mpi);
+    mbedtls_mpi_free(&rr_mpi);
 
     /* 写入输出: [key_num_bits(4)][n0inv(4)][modulus(key_bytes)][rr(key_bytes)] */
-    uint32_t key_num_bits_be = __builtin_bswap32(key_bits_rounded);
-    uint32_t n0inv_be = __builtin_bswap32(n0inv);
-    memcpy(out, &key_num_bits_be, 4);
-    memcpy(out + 4, &n0inv_be, 4);
-    memcpy(out + 8, modulus_buf, key_bytes);
+    put_u32_be(out, key_bits_rounded);
+    put_u32_be(out + 4, n0inv);
+    memcpy(out + 8, mod_buf, key_bytes);
     memcpy(out + 8 + key_bytes, rr_buf, key_bytes);
     *out_len = 8 + 2 * key_bytes;
 
-    free(modulus_buf);
-    free(rr_buf);
-    BN_free(rr);
-    BN_free(r);
-    BN_CTX_free(bn_ctx);
-    RSA_free(rsa);
     return 0;
-}
-
-/* ========== 大端序列化辅助 (AVB 磁盘格式为大端) ========== */
-
-static inline void put_u32_be(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)(v);
-}
-
-static inline void put_u64_be(uint8_t *p, uint64_t v) {
-    p[0] = (uint8_t)(v >> 56);
-    p[1] = (uint8_t)(v >> 48);
-    p[2] = (uint8_t)(v >> 40);
-    p[3] = (uint8_t)(v >> 32);
-    p[4] = (uint8_t)(v >> 24);
-    p[5] = (uint8_t)(v >> 16);
-    p[6] = (uint8_t)(v >> 8);
-    p[7] = (uint8_t)(v);
 }
 
 /* 将 AvbVBMetaHeader 序列化为大端字节数组 (256 bytes) */
@@ -353,7 +340,7 @@ static void encode_footer_be(const AvbFooter *footer, uint8_t *out) {
     memset(out + o, 0, FOOTER_RESERVED); /* reserved */
 }
 
-/* ========== 6. AVB 签名 ========== */
+/* ========== 6. AVB 签名 (mbedTLS raw RSA) ========== */
 
 /*
  * avbtool.py 的签名方式:
@@ -362,13 +349,13 @@ static void encode_footer_be(const AvbFooter *footer, uint8_t *out) {
  *   signature = RSA_private_encrypt(padded_block, RSA_NO_PADDING)
  *   等价于: openssl rsautl -sign -raw -inkey key.pem
  */
-static int avb_sign(EVP_PKEY *pkey,
+static int avb_sign(mbedtls_rsa_context *rsa,
                     const uint8_t *data_to_sign, size_t data_len,
                     uint8_t *signature, size_t *sig_len)
 {
     /* 1. SHA256(data_to_sign) */
-    uint8_t digest[SHA256_DIGEST_LENGTH];
-    SHA256(data_to_sign, data_len, digest);
+    uint8_t digest[32];
+    mbedtls_sha256(data_to_sign, data_len, digest, 0);
 
     /* 2. 构建 PKCS#1 v1.5 填充块
      *    布局: [0x00][0x01][458 x 0xff][0x00][19 ASN.1 header][32 digest]
@@ -378,24 +365,12 @@ static int avb_sign(EVP_PKEY *pkey,
     build_pkcs1_padding(digest, padded);
 
     /* 3. Raw RSA signing (RSA_NO_PADDING) */
-    RSA *rsa = EVP_PKEY_get1_RSA(pkey);
-    if (!rsa) {
-        fprintf(stderr, "Failed to get RSA key\n");
+    int ret = mbedtls_rsa_private(rsa, simple_rng, NULL, padded, signature);
+    if (ret != 0) {
+        fprintf(stderr, "mbedtls_rsa_private failed: -0x%04x\n", (unsigned)-ret);
         return -1;
     }
 
-    unsigned char sig_buf[SIG_NUM_BYTES];
-    int ret = RSA_private_encrypt(SIG_NUM_BYTES, padded, sig_buf,
-                                  rsa, RSA_NO_PADDING);
-    RSA_free(rsa);
-
-    if (ret != SIG_NUM_BYTES) {
-        fprintf(stderr, "RSA_private_encrypt failed (ret=%d): ", ret);
-        print_openssl_error();
-        return -1;
-    }
-
-    memcpy(signature, sig_buf, SIG_NUM_BYTES);
     *sig_len = SIG_NUM_BYTES;
     return 0;
 }
@@ -446,7 +421,7 @@ static size_t encode_hash_descriptor(const char *partition_name,
 
 static uint8_t* generate_vbmeta(const char *partition_name,
                                 const uint8_t *image_data, size_t image_size,
-                                EVP_PKEY *pkey,
+                                const mbedtls_rsa_context *rsa,
                                 size_t *out_size)
 {
     /* 1. 生成随机盐 */
@@ -462,13 +437,15 @@ static uint8_t* generate_vbmeta(const char *partition_name,
     }
 
     /* 2. 计算图像 digest = SHA256(salt + image_data) */
-    uint8_t digest[SHA256_DIGEST_LENGTH];
+    uint8_t digest[32];
     {
-        SHA256_CTX ctx;
-        SHA256_Init(&ctx);
-        SHA256_Update(&ctx, salt, 32);
-        SHA256_Update(&ctx, image_data, image_size);
-        SHA256_Final(digest, &ctx);
+        mbedtls_sha256_context ctx;
+        mbedtls_sha256_init(&ctx);
+        mbedtls_sha256_starts(&ctx, 0);
+        mbedtls_sha256_update(&ctx, salt, 32);
+        mbedtls_sha256_update(&ctx, image_data, image_size);
+        mbedtls_sha256_finish(&ctx, digest);
+        mbedtls_sha256_free(&ctx);
     }
 
     /* 3. 编码 hash descriptor */
@@ -478,7 +455,7 @@ static uint8_t* generate_vbmeta(const char *partition_name,
 
     size_t desc_size = encode_hash_descriptor(
         partition_name, image_size,
-        salt, 32, digest, SHA256_DIGEST_LENGTH,
+        salt, 32, digest, 32,
         desc_buf, desc_buf_size);
 
     if (desc_size == 0) {
@@ -489,7 +466,7 @@ static uint8_t* generate_vbmeta(const char *partition_name,
     /* 4. 编码公开密钥 */
     uint8_t pubkey_buf[PUBKEY_NUM_BYTES];
     size_t pubkey_size = 0;
-    if (encode_avb_pubkey(pkey, pubkey_buf, &pubkey_size) != 0) {
+    if (encode_avb_pubkey(rsa, pubkey_buf, &pubkey_size) != 0) {
         free(desc_buf);
         return NULL;
     }
@@ -514,7 +491,7 @@ static uint8_t* generate_vbmeta(const char *partition_name,
     hdr.rollback_index = 0;
     hdr.flags = 0;
     hdr.rollback_index_location = 0;
-    strcpy(hdr.release_string, "avb_autosign 1.0");
+    strcpy(hdr.release_string, "avb_mini_signer 1.0");
 
     /* Aux block offsets */
     hdr.auxiliary_data_block_size = aux_block_size;
@@ -545,13 +522,13 @@ static uint8_t* generate_vbmeta(const char *partition_name,
     memcpy(hash_input, hdr_blob, 256);
     memcpy(hash_input + 256, aux_block, aux_block_size);
 
-    uint8_t auth_hash[SHA256_DIGEST_LENGTH];
-    SHA256(hash_input, hash_input_size, auth_hash);
+    uint8_t auth_hash[32];
+    mbedtls_sha256(hash_input, hash_input_size, auth_hash, 0);
 
     /* 9. 签名 hash */
     uint8_t signature[SIG_NUM_BYTES];
     size_t sig_len = 0;
-    if (avb_sign(pkey, hash_input, hash_input_size,
+    if (avb_sign((mbedtls_rsa_context*)rsa, hash_input, hash_input_size,
                  signature, &sig_len) != 0) {
         free(aux_block);
         free(hash_input);
@@ -580,108 +557,71 @@ static uint8_t* generate_vbmeta(const char *partition_name,
     return vbmeta;
 }
 
+/* ========== 9. 主函数 ========== */
 /* 最大元数据空间估计（用于空间预检）
  * 我们的实际 vbmeta = 2112 bytes, footer = 64 bytes, 
  * 但为了安全（盐随机变化导致 desc 大小微调）用宽松值 */
+
 #define MAX_METADATA_ESTIMATE 8192
 
-/* ========== 9. 主函数 ========== */
-
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
     if (argc != 4) {
+        fprintf(stderr, "avb_mini_signer 1.0.1 - Linked mbedtls.\n""- Konoka (Manatsu0721@github)\n\n");
         fprintf(stderr, "Usage: %s <partition_name> <partition_size> <image_path>\n"
                         "Example: %s boot 0x200000 boot.img\n"
-                        "         %s system 16777216 system.img\n",
+                        "         %s system 1048576000 system.img\n",
                 argv[0], argv[0], argv[0]);
         return 1;
     }
 
     const char *partition_name = argv[1];
     uint64_t partition_size = strtoull(argv[2], NULL, 0);
-    if (partition_size == 0) {
+    if (partition_size == 0 || partition_size % 4096 != 0) {
         fprintf(stderr, "Invalid partition size: %s\n", argv[2]);
         return 1;
     }
     const char *image_path = argv[3];
-    const uint64_t block_size = 4096;
-
-    if (partition_size % block_size != 0) {
-        fprintf(stderr, "Partition size %llu is not a multiple of %llu\n",
-                (unsigned long long)partition_size,
-                (unsigned long long)block_size);
-        return 1;
-    }
-
-    /* 初始化 OpenSSL (不加载配置文件——静态链接时会导致崩溃) */
-    OPENSSL_init_crypto(OPENSSL_INIT_NO_LOAD_CONFIG, NULL);
-    OpenSSL_add_all_algorithms();
-    ERR_load_crypto_strings();
 
     /* 1. 加载私钥 */
-    EVP_PKEY *pkey = load_embedded_key();
-    if (!pkey) {
-        fprintf(stderr, "Failed to load embedded key\n");
-        return 1;
-    }
-    if (EVP_PKEY_id(pkey) != EVP_PKEY_RSA) {
-        fprintf(stderr, "Embedded key is not RSA\n");
-        EVP_PKEY_free(pkey);
-        return 1;
-    }
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    if (load_embedded_key(&pk) != 0) { mbedtls_pk_free(&pk); return 1; }
+    mbedtls_rsa_context *rsa = mbedtls_pk_rsa(pk);
+    if (!rsa) { fprintf(stderr, "No RSA context\n"); mbedtls_pk_free(&pk); return 1; }
 
     /* 2. 读取镜像文件 */
     size_t file_size;
     uint8_t *image_data = read_file(image_path, &file_size);
-    if (!image_data) {
-        fprintf(stderr, "Failed to read %s\n", image_path);
-        EVP_PKEY_free(pkey);
-        return 1;
-    }
+    if (!image_data) { mbedtls_pk_free(&pk); return 1; }
 
-    /* 3. 检测并剥离旧 AVB footer (实现幂等性, 类似 avbtool.py) */
+    /* 3. 检测并剥离旧 AVB footer */
     uint64_t orig_size = file_size;
     if (file_size >= sizeof(AvbFooter)) {
-        /* 读取文件末尾的 footer 区域 */
-        uint64_t footer_candidate_off = file_size - sizeof(AvbFooter);
-        uint8_t *footer_area = image_data + footer_candidate_off;
+        uint8_t *footer_area = image_data + file_size - sizeof(AvbFooter);
         if (memcmp(footer_area, AVB_FOOTER_MAGIC, AVB_FOOTER_MAGIC_LEN) == 0) {
-            /* 解析旧 footer, 获取 original_image_size */
-            /* Footer 大端布局: magic(4) + ver_maj(4) + ver_min(4) + 
-             * orig_size(8) + vbmeta_off(8) + vbmeta_sz(8) + reserved(28) */
-            uint64_t old_orig_size = 0;
-            for (int i = 0; i < 8; i++) {
-                old_orig_size = (old_orig_size << 8) | footer_area[12 + i];
-            }
+            uint64_t old_orig = 0;
+            for (int i = 0; i < 8; i++) old_orig = (old_orig << 8) | footer_area[12 + i];
             printf("Found existing footer (original_size=%llu), stripping\n",
-                   (unsigned long long)old_orig_size);
-            orig_size = old_orig_size;
-            /* 不需要真的 truncate 文件; 用 orig_size 做后续判断即可 */
+                   (unsigned long long)old_orig);
+            orig_size = old_orig;
         }
     }
 
-    /* 如果没找到旧 footer, 尝试扫描末尾连续 \0 来确定实际数据大小 */
+    /* 4. 末尾零扫描 */
     if (orig_size == file_size && file_size > 0) {
-        /* 从文件末尾向前扫描, 找到最后一个非零字节 */
-        size_t scan_pos = file_size;
-        while (scan_pos > 0) {
-            scan_pos--;
-            if (image_data[scan_pos] != 0) {
-                scan_pos++; /* 指向最后一个非零字节之后 */
-                break;
-            }
-        }
-        if (scan_pos < file_size) {
-            /* 对齐到 block_size */
-            size_t trimmed = round_up(scan_pos, block_size);
+        size_t scan = file_size;
+        while (scan > 0) { scan--; if (image_data[scan] != 0) { scan++; break; } }
+        if (scan < file_size) {
+            size_t trimmed = round_up(scan, 4096);
             if (trimmed < file_size) {
-                printf("Trimmed trailing zeros: %zu -> %zu bytes\n",
-                       file_size, trimmed);
+                printf("Trimmed trailing zeros: %zu -> %zu bytes\n", file_size, trimmed);
                 orig_size = trimmed;
             }
         }
     }
 
-    /* 4. 空间预检: 确保镜像能放进分区 */
+    /* 5. 空间预检 */
     if (orig_size > partition_size - MAX_METADATA_ESTIMATE) {
         fprintf(stderr,
                 "ERROR: Image size (%llu) exceeds maximum image size (%llu)\n"
@@ -690,110 +630,78 @@ int main(int argc, char **argv) {
                 (unsigned long long)(partition_size - MAX_METADATA_ESTIMATE),
                 (unsigned long long)partition_size,
                 (unsigned long long)MAX_METADATA_ESTIMATE);
-        free(image_data);
-        EVP_PKEY_free(pkey);
-        return 1;
+        free(image_data); mbedtls_pk_free(&pk); return 1;
     }
 
-    printf("Image: %s (actual=%zu, partition=%llu)\n",
+    printf("Image: %s (%zu bytes, partition %llu)\n",
            image_path, orig_size, (unsigned long long)partition_size);
 
-    /* 5. 生成 VBMeta blob (用 orig_size 的数据, 不是 file_size) */
+    /* 6. 生成 VBMeta blob */
     size_t vbmeta_size;
     uint8_t *vbmeta = generate_vbmeta(partition_name, image_data, orig_size,
-                                      pkey, &vbmeta_size);
+                                      rsa, &vbmeta_size);
     if (!vbmeta) {
         fprintf(stderr, "Failed to generate VBMeta blob\n");
-        free(image_data);
-        EVP_PKEY_free(pkey);
-        return 1;
+        free(image_data); mbedtls_pk_free(&pk); return 1;
     }
 
-    size_t vbmeta_padded_size = round_up(vbmeta_size, block_size);
-    uint64_t total_metadata = vbmeta_padded_size + sizeof(AvbFooter);
-    if (orig_size + total_metadata > partition_size) {
-        fprintf(stderr,
-                "ERROR: Image + metadata (%llu + %llu = %llu) exceeds "
-                "partition size %llu\n",
+    size_t vbmeta_padded = round_up(vbmeta_size, 4096);
+    uint64_t total_meta = vbmeta_padded + sizeof(AvbFooter);
+    if (orig_size + total_meta > partition_size) {
+        fprintf(stderr, "ERROR: Image + metadata (%llu + %llu = %llu) exceeds "
+                        "partition size %llu\n",
                 (unsigned long long)orig_size,
-                (unsigned long long)total_metadata,
-                (unsigned long long)(orig_size + total_metadata),
+                (unsigned long long)total_meta,
+                (unsigned long long)(orig_size + total_meta),
                 (unsigned long long)partition_size);
-        free(image_data); free(vbmeta); EVP_PKEY_free(pkey);
-        return 1;
+        free(vbmeta); free(image_data); mbedtls_pk_free(&pk); return 1;
     }
 
-    printf("VBMeta blob: %zu bytes (padded: %zu)\n", vbmeta_size, vbmeta_padded_size);
+    printf("VBMeta blob: %zu bytes\n", vbmeta_size);
 
-    /* 6. 打开镜像文件（写入模式）, 扩展至 partition_size */
+    /* 7. 写入镜像文件 */
     FILE *fp = fopen(image_path, "rb+");
-    if (!fp) {
-        perror("fopen for write");
-        free(image_data); free(vbmeta); EVP_PKEY_free(pkey);
-        return 1;
-    }
-
+    if (!fp) { perror("fopen"); free(vbmeta); free(image_data); mbedtls_pk_free(&pk); return 1; }
     if (extend_file(fp, partition_size) != 0) {
-        fprintf(stderr, "Failed to extend image to partition size\n");
-        fclose(fp); free(image_data); free(vbmeta); EVP_PKEY_free(pkey);
-        return 1;
+        fclose(fp); free(vbmeta); free(image_data); mbedtls_pk_free(&pk); return 1;
     }
 
-    /* 7. 计算 vbmeta 写入位置: 在分区末尾预留 footer 空间之后 */
-    uint64_t vbmeta_offset = partition_size - sizeof(AvbFooter) - vbmeta_padded_size;
+    uint64_t vbmeta_off = partition_size - sizeof(AvbFooter) - vbmeta_padded;
+    if (orig_size > vbmeta_off) vbmeta_off = round_up(orig_size, 4096);
 
-    /* 确保不覆盖原镜像数据 */
-    if (orig_size > vbmeta_offset) {
-        vbmeta_offset = round_up(orig_size, block_size);
+    uint8_t *vbmeta_buf = calloc(1, vbmeta_padded);
+    if (!vbmeta_buf) { fclose(fp); free(vbmeta); free(image_data); mbedtls_pk_free(&pk); return 1; }
+    memcpy(vbmeta_buf, vbmeta, vbmeta_size);
+    if (write_file_at(fp, vbmeta_off, vbmeta_buf, vbmeta_padded) != 0) {
+        free(vbmeta_buf); fclose(fp); free(vbmeta); free(image_data); mbedtls_pk_free(&pk); return 1;
     }
+    free(vbmeta_buf);
 
-    printf("Writing vbmeta at offset %llu\n", (unsigned long long)vbmeta_offset);
-
-    /* 写入 vbmeta blob (带 block_size 填充) */
-    uint8_t *vbmeta_padded = calloc(1, vbmeta_padded_size);
-    if (!vbmeta_padded) {
-        fclose(fp); free(image_data); free(vbmeta); EVP_PKEY_free(pkey);
-        return 1;
-    }
-    memcpy(vbmeta_padded, vbmeta, vbmeta_size);
-
-    if (write_file_at(fp, vbmeta_offset, vbmeta_padded, vbmeta_padded_size) != 0) {
-        fprintf(stderr, "Failed to write vbmeta blob\n");
-        free(vbmeta_padded); fclose(fp); free(image_data); free(vbmeta);
-        EVP_PKEY_free(pkey);
-        return 1;
-    }
-    free(vbmeta_padded);
-
-    /* 8. 写入 Footer (大端) */
+    /* 8. 写入 Footer */
     AvbFooter footer;
     memset(&footer, 0, sizeof(footer));
     memcpy(footer.magic, AVB_FOOTER_MAGIC, AVB_FOOTER_MAGIC_LEN);
     footer.version_major = 1;
     footer.version_minor = 0;
     footer.original_image_size = orig_size;
-    footer.vbmeta_offset = vbmeta_offset;
+    footer.vbmeta_offset = vbmeta_off;
     footer.vbmeta_size = vbmeta_size;
 
-    uint8_t footer_blob[sizeof(AvbFooter)];
-    encode_footer_be(&footer, footer_blob);
+    uint8_t ftr[sizeof(AvbFooter)];
+    encode_footer_be(&footer, ftr);
 
-    uint64_t footer_offset = partition_size - sizeof(AvbFooter);
-    if (write_file_at(fp, footer_offset, footer_blob, sizeof(footer_blob)) != 0) {
+    uint64_t footer_off = partition_size - sizeof(AvbFooter);
+    if (write_file_at(fp, footer_off, ftr, sizeof(ftr)) != 0) {
         fprintf(stderr, "Failed to write footer\n");
-        fclose(fp); free(image_data); free(vbmeta);
-        EVP_PKEY_free(pkey);
-        return 1;
+        fclose(fp); free(vbmeta); free(image_data); mbedtls_pk_free(&pk); return 1;
     }
-
     fclose(fp);
 
     printf("Successfully signed %s (partition=%s, offset=%llu, vbmeta=%zu bytes)\n",
            image_path, partition_name,
-           (unsigned long long)vbmeta_offset, vbmeta_size);
+           (unsigned long long)vbmeta_off, vbmeta_size);
 
-    free(image_data);
-    free(vbmeta);
-    EVP_PKEY_free(pkey);
+    free(vbmeta); free(image_data);
+    mbedtls_pk_free(&pk);
     return 0;
 }
