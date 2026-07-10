@@ -1,4 +1,4 @@
-[English](README.md)
+[中文版](README.zh.md)
 
 The main license of this repository was changed to Apache 2.0 on July 6, 2026.
 
@@ -40,7 +40,7 @@ wget https://googledownloads.cn/android/repository/android-ndk-r27d-linux.zip
 unzip android-ndk-r27d-linux.zip -d ~/
 export PATH=~/android-ndk-r27d:$PATH
 
-git clone --depth=1 https://github.com/Manatsu0721/avb_mini_signer.git
+git clone --depth=1 --branch mbedtls https://github.com/Manatsu0721/avb_mini_signer.git
 cd avb_mini_signer
 ndk-build
 ```
