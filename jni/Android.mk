@@ -21,6 +21,6 @@ LOCAL_CFLAGS := -O2 -fdata-sections -ffunction-sections -fvisibility=hidden \
 LOCAL_LDFLAGS := -static \
                  -Wl,--build-id=md5 \
                  -Wl,--gc-sections \
-                 -Wl,-Map=output.map
+                 -Wl,-Map=$(LOCAL_PATH)/../obj/local/$(TARGET_ARCH_ABI)/output.map
 
 include $(BUILD_EXECUTABLE)
