@@ -7,7 +7,9 @@
 # avb_mini_signer（旧名称avb_autosign） — 静态链接的 AVB 2.0 RSA4096 add_hash_footer 实现。
 该分支核心部分使用可以做小且静态链接的mbedTLS驱动。可以很好地在一些受限的环境中运行，能够做到不依赖系统库和程序。
 
-用法: 
+**额外推荐** avbroot (GPLv3)：另一个功能更完整的类似项目 - https://github.com/chenxiaolong/avbroot
+
+# 用法: 
 ```bash
 ./avb_mini_signer <partition_name> <partition_size> <image_path>
 ```
