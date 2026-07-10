@@ -33,7 +33,7 @@ wget https://googledownloads.cn/android/repository/android-ndk-r27d-linux.zip
 unzip android-ndk-r27d-linux.zip -d ~/
 export PATH=~/android-ndk-r27d:$PATH
 
-git clone --depth=1 https://github.com/Manatsu0721/avb_mini_signer.git
+git clone --depth=1 --branch mbedtls https://github.com/Manatsu0721/avb_mini_signer.git
 cd avb_mini_signer
 ndk-build
 
@@ -72,13 +72,12 @@ cd ../../..
 
 # 怎么将自己的私钥构建入二进制？
 1. 确保你准备的是SHA256_RSA4096 private key
-2. 使用与目标架构匹配的ld或objcopy转为目标文件。命令示例见下。
-3. （如果使用安卓NDK构建）还需要把这个目标文件打包为小静态库，因为ndk-build脚本不支持目标文件直接输入。
+2. 使用`xxd -i`将其转换为编译器可以识别的数组，保存于key.c。
+
 ```bash
-ld.lld -r -b binary -m <架构> subaru_key.pem -o private_key.o
-ar rcs private_key.a private_key.o
+xxd -i private_key.pem >key.c
 ```
-> 请注意main.c开头extern声明的函数与刚刚的目标文件是否一致。你输入的.pem的文件名会直接决定目标文件的符号。
+> 请注意main.c开头extern声明的符号与刚刚的key.c里提供的是否一致。你输入的.pem的文件名会直接决定它。
 
 
 ![extra.jpg](https://raw.githubusercontent.com/Manatsu0721/Manatsu0721/main/%E5%85%B3%E8%81%94%E5%85%B6%E5%AE%83%E4%BB%93%E5%BA%93%E7%9A%84%E6%8C%81%E4%B9%85%E6%96%87%E4%BB%B6/avb_mini_signer/d88eb5f15609c61cf7dd3d2e5fa73d8a.jpg)

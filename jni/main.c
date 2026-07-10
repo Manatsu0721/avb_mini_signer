@@ -22,8 +22,8 @@
 #include <mbedtls/bignum.h>
 
 /* ========== 1. 嵌入的私钥 ========== */
-extern char _binary_subaru_key_pem_start[];
-extern char _binary_subaru_key_pem_end[];
+extern unsigned char private_key_pem[];
+extern unsigned int private_key_pem_len;
 
 /* ========== 2. AVB 常数 ========== */
 #define AVB_FOOTER_MAGIC      "AVBf"
@@ -162,11 +162,11 @@ static int simple_rng(void *ctx, unsigned char *buf, size_t len) {
 }
 
 static int load_embedded_key(mbedtls_pk_context *pk) {
-    long raw_len = _binary_subaru_key_pem_end - _binary_subaru_key_pem_start;
+    size_t raw_len = private_key_pem_len;
     /* mbedtls PEM 解析要求 null-terminated 字符串 */
     unsigned char *key_buf = malloc(raw_len + 1);
     if (!key_buf) return -1;
-    memcpy(key_buf, _binary_subaru_key_pem_start, raw_len);
+    memcpy(key_buf, private_key_pem, raw_len);
     key_buf[raw_len] = '\0';
 
     int ret = mbedtls_pk_parse_key(pk, key_buf, raw_len + 1,

@@ -7,24 +7,20 @@ MBEDTLS_SRC := aes.c asn1parse.c asn1write.c base64.c bignum.c bignum_core.c \
      md.c oid.c pem.c pk.c pkparse.c pk_wrap.c platform.c platform_util.c \
      rsa.c rsa_alt_helpers.c sha256.c
 
-# ---- private_key_object 预编译库 ----
-include $(CLEAR_VARS)
-LOCAL_MODULE := private_key_object
-LOCAL_SRC_FILES := private_key_object/$(KEY_LIB)
-include $(PREBUILT_STATIC_LIBRARY)
 
 # ---- 主可执行文件 ----
 include $(CLEAR_VARS)
 LOCAL_MODULE := avb_mini_signer
-LOCAL_SRC_FILES := main.c $(addprefix $(LOCAL_PATH)/mbedtls/library/, $(MBEDTLS_SRC))
+LOCAL_SRC_FILES := main.c key.c $(addprefix $(LOCAL_PATH)/mbedtls/library/, $(MBEDTLS_SRC))
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/mbedtls/include
 LOCAL_CFLAGS := -O2 -fdata-sections -ffunction-sections -fvisibility=hidden \
                 -std=c11 -fPIE -Wall -Wextra \
-                -DMBEDTLS_CONFIG_FILE=\"avb_config.h\" \
-                -DMBEDTLS_ALLOW_PRIVATE_ACCESS
+                -DMBEDTLS_CONFIG_FILE=\"avb_config.h\" 
+#                -DMBEDTLS_ALLOW_PRIVATE_ACCESS
+
 LOCAL_LDFLAGS := -static \
                  -Wl,--build-id=md5 \
                  -Wl,--gc-sections \
                  -Wl,-Map=output.map
-LOCAL_STATIC_LIBRARIES := private_key_object
+
 include $(BUILD_EXECUTABLE)

@@ -81,13 +81,12 @@ cd ../../..
 ## Embedding a Custom Private Key
 
 1. Ensure you have a SHA256_RSA4096 private key.
-2. Use `ld` or `objcopy` (matching your target architecture) to convert the key into an object file. See command examples below.
-3. (When using the Android NDK) Package the object file into a static library archive, since the ndk-build script does not accept raw object files as direct input.
+2. Use `xxd -i` to convert it into an array that the compiler can recognize and save it as key.c.
+
 ```bash
-ld.lld -r -b binary -m <architecture> subaru_key.pem -o private_key.o
-ar rcs private_key.a private_key.o
+xxd -i private_key.pem >key.c
 ```
-> Ensure the `extern` symbol declarations in `main.c` match the object file generated from your `.pem` — the symbol name is derived from the input `.pem` filename.
+> Please note whether the symbols declared with `extern` at the beginning of `main.c` are consistent with those provided in `key.c` just now. The filename of the `.pem` you enter will directly determine it.
 
 ---
 
