@@ -633,7 +633,7 @@ int main(int argc, char **argv)
         free(image_data); mbedtls_pk_free(&pk); return 1;
     }
 
-    printf("Image: %s (%zu bytes, partition %llu)\n",
+    printf("Image: %s (%llu bytes, partition %llu)\n",
            image_path, orig_size, (unsigned long long)partition_size);
 
     /* 6. 生成 VBMeta blob */
