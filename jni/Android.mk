@@ -11,7 +11,7 @@ MBEDTLS_SRC := aes.c asn1parse.c asn1write.c base64.c bignum.c bignum_core.c \
 # ---- 主可执行文件 ----
 include $(CLEAR_VARS)
 LOCAL_MODULE := avb_mini_signer
-LOCAL_SRC_FILES := main.c key.c $(addprefix $(LOCAL_PATH)/mbedtls/library/, $(MBEDTLS_SRC))
+LOCAL_SRC_FILES := main.c key.c $(addprefix mbedtls/library/, $(MBEDTLS_SRC))
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/mbedtls/include
 LOCAL_CFLAGS := -O2 -fdata-sections -ffunction-sections -fvisibility=hidden \
                 -std=c11 -fPIE -Wall -Wextra \
