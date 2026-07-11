@@ -4,7 +4,7 @@ The main license of this repository was changed to Apache 2.0 on July 6, 2026.
 
 ---
 
-# avb_mini_signer (formerly avb_autosign) — Statically Linked AVB 2.0 RSA4096 add_hash_footer Implementation
+# avb_mini_signer (formerly avb_autosign) — Simple AVB 2.0 RSA4096 add_hash_footer Implementation
 This repository has multiple branches. Please switch to the appropriate branch according to your linking requirements. 
 This branch uses openssl/boringssl `libcrypto` as the driver. It can run well in some restricted environments, and the resulting build can be smaller than the static version, but it requires dynamically linking to the system libcrypto.so.
 

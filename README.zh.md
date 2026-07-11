@@ -4,7 +4,7 @@
 
 ---
 
-# avb_mini_signer（旧名称avb_autosign） — 静态链接的 AVB 2.0 RSA4096 add_hash_footer 实现。
+# avb_mini_signer（旧名称avb_autosign） — 简单的 AVB 2.0 RSA4096 add_hash_footer 实现。
 本仓库存在多个分支，请根据链接方式需求自行切换至合适分支。
 该分支使用openssl/boringssl`libcrypto`驱动。可以很好地在一些受限的环境中运行，产物体积可以做的比static版本更小，但需动态链接系统libcrypto.so。
 
