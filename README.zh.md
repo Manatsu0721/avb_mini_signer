@@ -4,7 +4,8 @@
 > 经过我的考量，对我创建的这些无人问津的存储库使用GPL显然有些过分，考虑到一些偶然发现它并希望闭源使用的开发者，应该给予恰当的自由度。
 ---
 
-# avb_mini_signer（旧名称avb_autosign） — 静态链接的 AVB 2.0 RSA4096 add_hash_footer 实现。
+# avb_mini_signer（旧名称avb_autosign） — 简单的 AVB 2.0 RSA4096 add_hash_footer 实现。
+本仓库存在多个分支，请根据链接方式需求自行切换至合适分支。
 该分支核心部分使用可以做小且静态链接的mbedTLS驱动。可以很好地在一些受限的环境中运行，能够做到不依赖系统库和程序。
 
 **额外推荐** avbroot (GPLv3)：另一个功能更完整的类似项目 - https://github.com/chenxiaolong/avbroot

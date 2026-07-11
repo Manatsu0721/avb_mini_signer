@@ -6,8 +6,8 @@ The main license of this repository was changed to Apache 2.0 on July 6, 2026.
 
 ---
 
-# avb_mini_signer (formerly avb_autosign) — Statically Linked AVB 2.0 RSA4096 add_hash_footer Implementation
-
+# avb_mini_signer (formerly avb_autosign) — Simple AVB 2.0 RSA4096 add_hash_footer Implementation
+This repository has multiple branches. Please switch to the appropriate branch according to your linking requirements. 
 This branch uses mbedTLS as the crypto backend, which can be built small and statically linked. Runs well in constrained environments with zero dependency on system libraries or runtime.
 
 **Additional recommendation** avbroot (GPLv3): Another similar project with more complete features - https://github.com/chenxiaolong/avbroot
