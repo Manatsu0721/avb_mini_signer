@@ -2,12 +2,13 @@
 
 The main license of this repository was changed to Apache 2.0 on July 6, 2026.
 
-> After consideration, using GPL for these little-known repositories I created is clearly overkill. For developers who might stumble upon them and attempt to use them in closed-source projects, proper freedom should be granted.
 ---
 
 # avb_mini_signer (formerly avb_autosign) — Statically Linked AVB 2.0 RSA4096 add_hash_footer Implementation
+This repository has multiple branches. Please switch to the appropriate branch according to your linking requirements. 
+This branch uses openssl/boringssl `libcrypto` as the driver. It can run well in some restricted environments, and the resulting build can be smaller than the static version, but it requires dynamically linking to the system libcrypto.so.
 
-Runs well in constrained environments with zero dependency on system libraries or runtime.
+**Additional Recommendation** avbroot (GPLv3): Another similar project with more complete features - https://github.com/chenxiaolong/avbroot
 
 ## Usage
 
@@ -40,18 +41,16 @@ wget https://googledownloads.cn/android/repository/android-ndk-r27d-linux.zip
 unzip android-ndk-r27d-linux.zip -d ~/
 export PATH=~/android-ndk-r27d:$PATH
 
-git clone --depth=1 https://github.com/Manatsu0721/avb_mini_signer.git
+git clone --depth=1 --branch boringssl https://github.com/Manatsu0721/avb_mini_signer.git
 cd avb_mini_signer
 ndk-build
 ```
 
-## Building libcrypto from Source
-
-1. Download the libcrypto source (OpenSSL 1.1.1 — 1.1.1zh).
-2. Configure with minimal feature set.
-3. Run `make`. Locate the resulting `libcrypto.a`.
-
-> For cross-compilation to other architectures, configure the cross-compiler toolchain via environment variables beforehand.
+## Can't find a libcrypto or its stub suitable for your own architecture, how to build it yourself?
+0. Configure the cross-compiler through environment variables.
+1. Download the libcrypto source code (From openssl-1.1.1-1.1.1zh)
+2. Configure, while trimming unnecessary features.
+3. make. Finally, locate the resulting libcrypto.so.
 
 ```bash
 wget https://codeload.github.com/kzalewski/openssl-1.1.1/zip/refs/tags/1.1.1zh
@@ -69,15 +68,12 @@ make
 ## Embedding a Custom Private Key
 
 1. Ensure you have a SHA256_RSA4096 private key.
-2. Use `ld` or `objcopy` (matching your target architecture) to convert the key into an object file. See command examples below.
-3. (When using the Android NDK) Package the object file into a static library archive, since the ndk-build script does not accept raw object files as direct input.
+2. Use `xxd -i` to convert it into an array that the compiler can recognize and save it as key.c.
 
 ```bash
-ld.lld -r -b binary -m <architecture> subaru_key.pem -o private_key.o
-ar rcs private_key.a private_key.o
+xxd -i private_key.pem >key.c
 ```
-
-> Ensure the `extern` symbol declarations in `main.c` match the object file generated from your `.pem` — the symbol name is derived from the input `.pem` filename.
+> Please note whether the symbols declared with `extern` at the beginning of `main.c` are consistent with those provided in `key.c` just now. The filename of the `.pem` you enter will directly determine it.
 
 ---
 

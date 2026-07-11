@@ -1,11 +1,14 @@
 [English](README.md)
 
 本仓库主许可证已于2026年7月6日变更为Apache 2.0。
-> 经过我的考量，对我创建的这些无人问津的存储库使用GPL显然有些过分，考虑到一些偶然发现它并希望闭源使用的开发者，应该给予恰当的自由度。
+
 ---
 
 # avb_mini_signer（旧名称avb_autosign） — 静态链接的 AVB 2.0 RSA4096 add_hash_footer 实现。
-可以很好地在一些受限的环境中运行，能够做到不依赖系统库和程序。
+本仓库存在多个分支，请根据链接方式需求自行切换至合适分支。
+该分支使用openssl/boringssl`libcrypto`驱动。可以很好地在一些受限的环境中运行，产物体积可以做的比static版本更小，但需动态链接系统libcrypto.so。
+
+**额外推荐** avbroot (GPLv3)：另一个功能更完整的类似项目 - https://github.com/chenxiaolong/avbroot
 
 用法: 
 ```bash
@@ -33,18 +36,17 @@ wget https://googledownloads.cn/android/repository/android-ndk-r27d-linux.zip
 unzip android-ndk-r27d-linux.zip -d ~/
 export PATH=~/android-ndk-r27d:$PATH
 
-git clone --depth=1 https://github.com/Manatsu0721/avb_mini_signer.git
+git clone --depth=1 --branch boringssl https://github.com/Manatsu0721/avb_mini_signer.git
 cd avb_mini_signer
 ndk-build
 
 ```
 
-# 如何自行构建所需的libcrypto？
+# 没有找到合适自己架构的libcrypto或其存根，如何自行构建？
+0. 通过环境变量配置好交叉编译器。
 1. 下载libcrypto源码 (From openssl-1.1.1-1.1.1zh)
 2. Configue，同时裁剪无用功能。
-3. make。最后将产物libcrypto.a找出来。
-
-> 若需要配置到其它架构的设备上使用，请先自行通过环境变量配置好交叉编译器。
+3. make。最后将产物libcrypto.so找出来。
 
 ```bash
 wget https://codeload.github.com/kzalewski/openssl-1.1.1/zip/refs/tags/1.1.1zh
@@ -61,14 +63,14 @@ make
 
 
 # 怎么将自己的私钥构建入二进制？
-1. 确保你准备的是SHA256_RSA4096 private key。
-2. 使用与目标架构匹配的ld或objcopy转为目标文件。命令示例见下。
-3. （如果使用安卓NDK构建）还需要把这个目标文件打包为小静态库，因为ndk-build脚本不支持目标文件直接输入。
+1. 确保你准备的是SHA256_RSA4096 private key
+2. 使用`xxd -i`将其转换为编译器可以识别的数组，保存于key.c。
+
 ```bash
-ld.lld -r -b binary -m <架构> subaru_key.pem -o private_key.o
-ar rcs private_key.a private_key.o
+xxd -i private_key.pem >key.c
 ```
-> 请注意main.c开头extern声明的函数与刚刚的目标文件是否一致。你输入的.pem的文件名会直接决定目标文件的符号。
+> 请注意main.c开头extern声明的符号与刚刚的key.c里提供的是否一致。你输入的.pem的文件名会直接决定它。
+
 
 
 ![extra.jpg](https://raw.githubusercontent.com/Manatsu0721/Manatsu0721/main/%E5%85%B3%E8%81%94%E5%85%B6%E5%AE%83%E4%BB%93%E5%BA%93%E7%9A%84%E6%8C%81%E4%B9%85%E6%96%87%E4%BB%B6/avb_mini_signer/d88eb5f15609c61cf7dd3d2e5fa73d8a.jpg)

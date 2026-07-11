@@ -30,8 +30,8 @@
 #include <openssl/sha.h>
 
 /* ========== 1. 嵌入的私钥 ========== */
-extern char _binary_subaru_key_pem_start[];
-extern char _binary_subaru_key_pem_end[];
+extern unsigned char private_key_pem[];
+extern unsigned int private_key_pem_len;
 
 /* ========== 2. AVB 常数 ========== */
 #define AVB_FOOTER_MAGIC      "AVBf"
@@ -142,8 +142,7 @@ static void print_openssl_error(void) {
 }
 
 static EVP_PKEY* load_embedded_key(void) {
-    long key_len = _binary_subaru_key_pem_end - _binary_subaru_key_pem_start;
-    BIO *bio = BIO_new_mem_buf(_binary_subaru_key_pem_start, key_len);
+    BIO *bio = BIO_new_mem_buf(private_key_pem, (int)private_key_pem_len);
     if (!bio) return NULL;
     EVP_PKEY *pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
     BIO_free(bio);
@@ -695,7 +694,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("Image: %s (actual=%zu, partition=%llu)\n",
+    printf("Image: %s (actual=%llu, partition=%llu)\n",
            image_path, orig_size, (unsigned long long)partition_size);
 
     /* 5. 生成 VBMeta blob (用 orig_size 的数据, 不是 file_size) */
