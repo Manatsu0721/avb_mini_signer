@@ -38,7 +38,7 @@ export PATH=~/android-ndk-r27d:$PATH
 
 git clone --depth=1 --branch boringssl https://github.com/Manatsu0721/avb_mini_signer.git
 cd avb_mini_signer
-ndk-build
+ndk-build APP_CFLAGS='-DVERSION=\"<你的版本号>\"'
 
 ```
 

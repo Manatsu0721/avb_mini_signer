@@ -1,15 +1,7 @@
 /*
- * avb_autosign — 静态链接的 AVB 2.0 add_hash_footer 实现
+ * avb_mini_signer — 简单的 AVB 2.0 add_hash_footer 实现
  *
- * 用法: avb_autosign <partition_name> <partition_size> <image_path>
- *
- * 功能等价于:
- *   avbtool.py add_hash_footer \
- *     --partition_name <name> \
- *     --image <path> \
- *     --algorithm SHA256_RSA4096 \
- *     --key <embedded>
- *     --partition_size <size>
+ * 用法: avb_mini_signer <partition_name> <partition_size> <image_path>
  * 
  * 输出直接覆写原镜像文件
  */
@@ -28,6 +20,14 @@
 #include <openssl/crypto.h>
 #include <unistd.h>
 #include <openssl/sha.h>
+
+/* ========== 0. 程序版本号和签名string（可以在构建时传参覆盖它们） ========== */
+#ifndef VERSION
+#define VERSION ""
+#endif
+#ifndef SIGN_STRING
+#define SIGN_STRING "avb_mini_signer 1.0"
+#endif
 
 /* ========== 1. 嵌入的私钥 ========== */
 extern unsigned char private_key_pem[];
@@ -54,6 +54,11 @@ extern unsigned int private_key_pem_len;
 #define FOOTER_RESERVED      28
 #define VBMETA_HEADER_RESERVED  80
 #define HASH_DESC_RESERVED   60
+
+/* 镜像最大元数据空间估计（用于空间预检）
+ * 我们的实际 vbmeta = 2112 bytes, footer = 64 bytes, 
+ * 但为了安全（盐随机变化导致 desc 大小微调）用宽松值 */
+#define MAX_METADATA_ESTIMATE 8192
 
 /* PKCS#1 v1.5 padding for SHA256_RSA4096
  *   0x00 0x01 [458 x 0xff] 0x00 [ASN.1 19 bytes] [digest 32 bytes]
@@ -513,7 +518,7 @@ static uint8_t* generate_vbmeta(const char *partition_name,
     hdr.rollback_index = 0;
     hdr.flags = 0;
     hdr.rollback_index_location = 0;
-    strcpy(hdr.release_string, "avb_autosign 1.0");
+    strcpy(hdr.release_string, SIGN_STRING);
 
     /* Aux block offsets */
     hdr.auxiliary_data_block_size = aux_block_size;
@@ -579,18 +584,16 @@ static uint8_t* generate_vbmeta(const char *partition_name,
     return vbmeta;
 }
 
-/* 最大元数据空间估计（用于空间预检）
- * 我们的实际 vbmeta = 2112 bytes, footer = 64 bytes, 
- * 但为了安全（盐随机变化导致 desc 大小微调）用宽松值 */
-#define MAX_METADATA_ESTIMATE 8192
+
 
 /* ========== 9. 主函数 ========== */
 
 int main(int argc, char **argv) {
     if (argc != 4) {
+        fprintf(stderr, "avb_mini_signer %s - Linked OpenSSL/BoringSSL.\n""- Konoka (Manatsu0721@github)\n\n",VERSION);
         fprintf(stderr, "Usage: %s <partition_name> <partition_size> <image_path>\n"
                         "Example: %s boot 0x200000 boot.img\n"
-                        "         %s system 16777216 system.img\n",
+                        "         %s system 1048576000 system.img\n",
                 argv[0], argv[0], argv[0]);
         return 1;
     }
