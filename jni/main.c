@@ -3,7 +3,6 @@
  *
  * 用法: avb_mini_signer <partition_name> <partition_size> <image_path>
  *
- * 私钥通过 ld -r -b binary 嵌入
  * 依赖: mbedTLS (RSA, SHA256, PEM, BIGNUM)
  */
 
@@ -20,6 +19,14 @@
 #include <mbedtls/rsa.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/bignum.h>
+
+/* ========== 0. 程序版本号和签名string（可以在构建时传参覆盖它们） ========== */
+#ifndef VERSION
+#define VERSION ""
+#endif
+#ifndef SIGN_STRING
+#define SIGN_STRING "avb_mini_signer 1.0"
+#endif
 
 /* ========== 1. 嵌入的私钥 ========== */
 extern unsigned char private_key_pem[];
@@ -46,6 +53,12 @@ extern unsigned int private_key_pem_len;
 #define FOOTER_RESERVED      28
 #define VBMETA_HEADER_RESERVED  80
 #define HASH_DESC_RESERVED   60
+
+/* 镜像最大元数据空间估计（用于空间预检）
+ * 我们的实际 vbmeta = 2112 bytes, footer = 64 bytes, 
+ * 但为了安全（盐随机变化导致 desc 大小微调）用宽松值 */
+#define MAX_METADATA_ESTIMATE 8192
+
 
 /* PKCS#1 v1.5 padding for SHA256_RSA4096
  *   0x00 0x01 [458 x 0xff] 0x00 [ASN.1 19 bytes] [digest 32 bytes]
@@ -558,16 +571,11 @@ static uint8_t* generate_vbmeta(const char *partition_name,
 }
 
 /* ========== 9. 主函数 ========== */
-/* 最大元数据空间估计（用于空间预检）
- * 我们的实际 vbmeta = 2112 bytes, footer = 64 bytes, 
- * 但为了安全（盐随机变化导致 desc 大小微调）用宽松值 */
-
-#define MAX_METADATA_ESTIMATE 8192
 
 int main(int argc, char **argv)
 {
     if (argc != 4) {
-        fprintf(stderr, "avb_mini_signer 1.0.1 - Linked mbedtls.\n""- Konoka (Manatsu0721@github)\n\n");
+        fprintf(stderr, "avb_mini_signer %s - Linked mbedtls.\n""- Konoka (Manatsu0721@github)\n\n",VERSION);
         fprintf(stderr, "Usage: %s <partition_name> <partition_size> <image_path>\n"
                         "Example: %s boot 0x200000 boot.img\n"
                         "         %s system 1048576000 system.img\n",
