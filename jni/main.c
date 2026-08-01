@@ -608,14 +608,30 @@ int main(int argc, char **argv)
 
     /* 3. 检测并剥离旧 AVB footer */
     uint64_t orig_size = file_size;
+    uint64_t old_vbmeta_off = 0; /* 旧 vbmeta 偏移; 0 表示未找到或不可用 */
     if (file_size >= sizeof(AvbFooter)) {
         uint8_t *footer_area = image_data + file_size - sizeof(AvbFooter);
         if (memcmp(footer_area, AVB_FOOTER_MAGIC, AVB_FOOTER_MAGIC_LEN) == 0) {
-            uint64_t old_orig = 0;
-            for (int i = 0; i < 8; i++) old_orig = (old_orig << 8) | footer_area[12 + i];
-            printf("Found existing footer (original_size=%llu), stripping\n",
-                   (unsigned long long)old_orig);
+            uint64_t old_orig = 0, old_off = 0;
+            for (int i = 0; i < 8; i++) {
+                old_orig = (old_orig << 8) | footer_area[12 + i];
+                old_off  = (old_off  << 8) | footer_area[20 + i];
+            }
+            printf("Found existing footer (original_size=%llu, vbmeta_offset=%llu), stripping\n",
+                   (unsigned long long)old_orig, (unsigned long long)old_off);
             orig_size = old_orig;
+            /* 验证旧 vbmeta 位置: 只有在那里确实找到 AVB0 magic 才原地复用,
+             * 否则回退到默认放置逻辑 */
+            if (old_off != 0 && old_off + AVB_MAGIC_LEN <= file_size &&
+                memcmp(image_data + old_off, AVB_MAGIC, AVB_MAGIC_LEN) == 0) {
+                printf("Old vbmeta (AVB0) found at offset %llu, will reuse its location\n",
+                       (unsigned long long)old_off);
+                old_vbmeta_off = old_off;
+            } else {
+                printf("Old vbmeta not found at footer offset %llu, "
+                       "falling back to default placement\n",
+                       (unsigned long long)old_off);
+            }
         }
     }
 
@@ -677,8 +693,18 @@ int main(int argc, char **argv)
         fclose(fp); free(vbmeta); free(image_data); mbedtls_pk_free(&pk); return 1;
     }
 
-    uint64_t vbmeta_off = partition_size - sizeof(AvbFooter) - vbmeta_padded;
-    if (orig_size > vbmeta_off) vbmeta_off = round_up(orig_size, 4096);
+    uint64_t vbmeta_off;
+    if (old_vbmeta_off != 0 &&
+        old_vbmeta_off >= orig_size &&
+        old_vbmeta_off + vbmeta_padded <= partition_size - sizeof(AvbFooter)) {
+        /* 原地复用旧 vbmeta 位置, 保持布局稳定 */
+        vbmeta_off = old_vbmeta_off;
+        printf("Reusing old vbmeta location at offset %llu\n",
+               (unsigned long long)vbmeta_off);
+    } else {
+        vbmeta_off = partition_size - sizeof(AvbFooter) - vbmeta_padded;
+        if (orig_size > vbmeta_off) vbmeta_off = round_up(orig_size, 4096);
+    }
 
     uint8_t *vbmeta_buf = calloc(1, vbmeta_padded);
     if (!vbmeta_buf) { fclose(fp); free(vbmeta); free(image_data); mbedtls_pk_free(&pk); return 1; }
