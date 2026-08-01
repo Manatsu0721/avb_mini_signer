@@ -642,21 +642,35 @@ int main(int argc, char **argv) {
 
     /* 3. 检测并剥离旧 AVB footer (实现幂等性, 类似 avbtool.py) */
     uint64_t orig_size = file_size;
+    uint64_t old_vbmeta_off = 0; /* 旧 vbmeta 偏移; 0 表示未找到或不可用 */
     if (file_size >= sizeof(AvbFooter)) {
         /* 读取文件末尾的 footer 区域 */
         uint64_t footer_candidate_off = file_size - sizeof(AvbFooter);
         uint8_t *footer_area = image_data + footer_candidate_off;
         if (memcmp(footer_area, AVB_FOOTER_MAGIC, AVB_FOOTER_MAGIC_LEN) == 0) {
-            /* 解析旧 footer, 获取 original_image_size */
+            /* 解析旧 footer, 获取 original_image_size 和 vbmeta_offset */
             /* Footer 大端布局: magic(4) + ver_maj(4) + ver_min(4) + 
              * orig_size(8) + vbmeta_off(8) + vbmeta_sz(8) + reserved(28) */
-            uint64_t old_orig_size = 0;
+            uint64_t old_orig_size = 0, old_off = 0;
             for (int i = 0; i < 8; i++) {
                 old_orig_size = (old_orig_size << 8) | footer_area[12 + i];
+                old_off       = (old_off       << 8) | footer_area[20 + i];
             }
-            printf("Found existing footer (original_size=%llu), stripping\n",
-                   (unsigned long long)old_orig_size);
+            printf("Found existing footer (original_size=%llu, vbmeta_offset=%llu), stripping\n",
+                   (unsigned long long)old_orig_size, (unsigned long long)old_off);
             orig_size = old_orig_size;
+            /* 验证旧 vbmeta 位置: 只有在那里确实找到 AVB0 magic 才原地复用,
+             * 否则回退到默认放置逻辑 */
+            if (old_off != 0 && old_off + AVB_MAGIC_LEN <= file_size &&
+                memcmp(image_data + old_off, AVB_MAGIC, AVB_MAGIC_LEN) == 0) {
+                printf("Old vbmeta (AVB0) found at offset %llu, will reuse its location\n",
+                       (unsigned long long)old_off);
+                old_vbmeta_off = old_off;
+            } else {
+                printf("Old vbmeta not found at footer offset %llu, "
+                       "falling back to default placement\n",
+                       (unsigned long long)old_off);
+            }
             /* 不需要真的 truncate 文件; 用 orig_size 做后续判断即可 */
         }
     }
@@ -742,11 +756,21 @@ int main(int argc, char **argv) {
     }
 
     /* 7. 计算 vbmeta 写入位置: 在分区末尾预留 footer 空间之后 */
-    uint64_t vbmeta_offset = partition_size - sizeof(AvbFooter) - vbmeta_padded_size;
+    uint64_t vbmeta_offset;
+    if (old_vbmeta_off != 0 &&
+        old_vbmeta_off >= orig_size &&
+        old_vbmeta_off + vbmeta_padded_size <= partition_size - sizeof(AvbFooter)) {
+        /* 原地复用旧 vbmeta 位置, 保持布局稳定 */
+        vbmeta_offset = old_vbmeta_off;
+        printf("Reusing old vbmeta location at offset %llu\n",
+               (unsigned long long)vbmeta_offset);
+    } else {
+        vbmeta_offset = partition_size - sizeof(AvbFooter) - vbmeta_padded_size;
 
-    /* 确保不覆盖原镜像数据 */
-    if (orig_size > vbmeta_offset) {
-        vbmeta_offset = round_up(orig_size, block_size);
+        /* 确保不覆盖原镜像数据 */
+        if (orig_size > vbmeta_offset) {
+            vbmeta_offset = round_up(orig_size, block_size);
+        }
     }
 
     printf("Writing vbmeta at offset %llu\n", (unsigned long long)vbmeta_offset);
