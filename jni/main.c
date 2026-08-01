@@ -291,12 +291,14 @@ static int encode_avb_pubkey(const mbedtls_rsa_context *rsa,
     uint32_t n0inv = 0U - inv;
 
     /* 计算 rr = r^2 mod N, 其中 r = 2^key_bits */
-    mbedtls_mpi r_mpi, rr_mpi;
+    mbedtls_mpi r_mpi, rr_mpi, two_mpi;
     mbedtls_mpi_init(&r_mpi);
     mbedtls_mpi_init(&rr_mpi);
+    mbedtls_mpi_init(&two_mpi);
+    mbedtls_mpi_lset(&two_mpi, 2);
 
     mbedtls_mpi_set_bit(&r_mpi, key_bits_rounded, 1);
-    mbedtls_mpi_exp_mod(&rr_mpi, &r_mpi, &r_mpi, n, NULL);
+    mbedtls_mpi_exp_mod(&rr_mpi, &r_mpi, &two_mpi, n, NULL);
 
     uint8_t rr_buf[512];
     memset(rr_buf, 0, sizeof(rr_buf));
@@ -304,6 +306,7 @@ static int encode_avb_pubkey(const mbedtls_rsa_context *rsa,
 
     mbedtls_mpi_free(&r_mpi);
     mbedtls_mpi_free(&rr_mpi);
+    mbedtls_mpi_free(&two_mpi);
 
     /* 写入输出: [key_num_bits(4)][n0inv(4)][modulus(key_bytes)][rr(key_bytes)] */
     put_u32_be(out, key_bits_rounded);
@@ -575,7 +578,7 @@ static uint8_t* generate_vbmeta(const char *partition_name,
 int main(int argc, char **argv)
 {
     if (argc != 4) {
-        fprintf(stderr, "avb_mini_signer %s - Linked mbedtls.\n""- Konoka (Manatsu0721@github)\n\n",VERSION);
+        fprintf(stderr, "avb_mini_signer %s - Linked mbedTLS.\n""- Konoka (Manatsu0721@github)\n\n",VERSION);
         fprintf(stderr, "Usage: %s <partition_name> <partition_size> <image_path>\n"
                         "Example: %s boot 0x200000 boot.img\n"
                         "         %s system 1048576000 system.img\n",
